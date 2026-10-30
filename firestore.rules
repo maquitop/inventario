@@ -1,0 +1,50 @@
+rules_version = '2';
+
+// Reglas de seguridad de la app de inventario Maquitop.
+// - Solo entran cuentas de Google aprobadas (colección "miembros").
+// - Las cuentas de ADMINS entran directo y aprueban a las demás.
+// - Quien entra por primera vez deja una "solicitud" y espera aprobación.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isOwner() {
+      return signedIn() && request.auth.token.email != null
+        && request.auth.token.email.lower() in ['villegasbrandon39@gmail.com'];   // ADMINS
+    }
+    function memberDoc() { return /databases/$(database)/documents/miembros/$(request.auth.uid); }
+    function isMember() { return signedIn() && exists(memberDoc()); }
+    function isAdmin() { return isOwner() || (isMember() && get(memberDoc()).data.admin == true); }
+
+    // Cuentas con acceso
+    match /miembros/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isMember() || isOwner());
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Pedidos de acceso de cuentas nuevas
+    match /solicitudes/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    // Respaldos automáticos (copias del inventario sin fotos). Cualquier miembro guarda; solo el administrador borra.
+    match /respaldos/{id} {
+      allow read, create: if isMember() || isOwner();
+      allow update, delete: if isAdmin();
+    }
+
+    // Avisos leídos de cada persona
+    match /data/users/{uid}/state {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Datos del inventario
+    match /{col}/{id} {
+      allow read, write: if (isMember() || isOwner())
+        && col in ['people', 'obras', 'alms', 'prods', 'tpls', 'items', 'kits', 'movs', 'notifs', 'config'];
+    }
+  }
+}
