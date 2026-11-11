@@ -4399,7 +4399,7 @@ function parseInvoice(lines){
 
 function setupImport(name,sheets,doc){
  let best=0;sheets.forEach((s,i)=>{if(s.rows.length>sheets[best].rows.length)best=i;});
- IMP={fileName:name,sheets,sheetIx:best,headerRow:-1,map:[],how:[],ncol:0,defTipo:'Ingreso',defLugar:almPrin(),rows:[],result:null,link:{},nuevo:{},src:null,meta:null};
+ IMP={fileName:name,sheets,sheetIx:best,headerRow:-1,map:[],how:[],ncol:0,defTipo:'Ingreso',defLugar:almPrin(),rows:[],result:null,link:{},nuevo:{},src:null,meta:null,fill:!doc,fillCand:0};
  if(doc){IMP.src=doc.src;IMP.meta=doc.meta;IMP.headerRow=0;IMP.map=doc.map.slice();IMP.how=doc.map.map(f=>f?'factura':'');IMP.ncol=doc.map.length;}
  else autoMap(true);
  analyze();
@@ -4465,10 +4465,10 @@ function analyze(){
  const col=f=>I.map.indexOf(f);
  const raw=(row,f)=>{const c=col(f);return c<0?'':row[c];};
  const txt=(row,f)=>{const v=raw(row,f);return v instanceof Date?v:String(v==null?'':v).trim();};
- const used=new Set(),newSer=new Set(),out=[];
+ const used=new Set(),newSer=new Set(),fillUsed=new Set(),out=[];I.fillCand=0;
  for(let r=start;r<rows.length;r++){
   const row=rows[r]||[];if(!row.some(x=>x!==''&&x!=null))continue;
-  const o={r:r+1,msgs:[],level:'ok',create:[],move:[],baja:[]};
+  const o={r:r+1,msgs:[],level:'ok',create:[],move:[],baja:[],fill:[],had:0};
   const warn=m=>{o.msgs.push(m);if(o.level==='ok')o.level='warn';};
   const err=m=>{o.msgs.push(m);o.level='error';};
   const npRaw=String(txt(row,'np')),art=String(txt(row,'articulo')),modRaw=String(txt(row,'modelo'));
@@ -4519,10 +4519,18 @@ function analyze(){
   if(o.level!=='error'){
    const find=s=>S.items.find(i=>i.serie&&norm(i.serie)===norm(s));
    if(o.tipo==='Ingreso'){
+    // «Completar series»: unidades de ese modelo sin serie que ya están en ese lugar reciben las series del archivo
+    const pool=prod&&loc?S.items.filter(i=>i.np===prod.np&&!i.serie&&i.cond!=='De baja'&&locKey(i.loc)===locKey(loc)&&!fillUsed.has(i.id)):[];
+    if(pool.length)I.fillCand++;const fr=I.fill?pool:[],nv=n=>plural(n,'nuevo','nuevos');
     if(series.length){series.forEach(s=>{const ex=find(s);if(ex)o.msgs.push('La serie '+s+' ya existe ('+ex.code+' · '+locShort(ex.loc)+'). No se duplica.');else if(newSer.has(norm(s)))o.msgs.push('La serie '+s+' está repetida en el archivo.');else{newSer.add(norm(s));o.create.push(s);}});
-     if(!o.create.length)o.level='skip';else if(o.create.length<series.length&&o.level==='ok')o.level='warn';}
+     while(o.create.length&&fr.length){const it=fr.shift();fillUsed.add(it.id);o.fill.push({id:it.id,serie:o.create.shift()});}
+     if(o.fill.length)o.msgs.push(plural(o.fill.length,'equipo sin serie ya estaba','equipos sin serie ya estaban')+' en '+locShort(loc)+': '+(o.fill.length>1?'se les ponen las series':'se le pone la serie')+(o.create.length?'; ingresa'+(o.create.length>1?'n ':' ')+nv(o.create.length):'')+'.');
+     if(!o.create.length&&!o.fill.length)o.level='skip';else if(o.create.length+o.fill.length<series.length&&o.level==='ok')o.level='warn';}
     else if(!qty){o.level='skip';o.msgs.push('Cantidad 0: no hay unidades que importar.');}
-    else{for(let k=0;k<qty;k++)o.create.push('');if(prod?prod.serie:(o.cat!=='cable'&&o.cat!=='iman'&&o.cat!=='otro'))warn('Sin serie: se crean '+plural(qty,'unidad','unidades')+' con la serie «Sin asignar».');}
+    else{const have=Math.min(fr.length,qty);fr.slice(0,have).forEach(i=>fillUsed.add(i.id));o.had=have;for(let k=0;k<qty-have;k++)o.create.push('');
+     if(have)o.msgs.push('Ya hay '+have+' en '+locShort(loc)+': '+(o.create.length?'ingresa'+(o.create.length>1?'n ':' ')+'solo '+(o.create.length>1?'los que faltan':'el que falta')+' ('+o.create.length+').':'no ingresa ninguno.'));
+     if(!o.create.length)o.level='skip';
+     else if(prod?prod.serie:(o.cat!=='cable'&&o.cat!=='iman'&&o.cat!=='otro'))warn('Sin serie: se crean '+plural(o.create.length,'unidad','unidades')+' con la serie «Sin asignar».');}
    }else if(o.tipo==='Traslado'){
     if(series.length){series.forEach(s=>{const ex=find(s);if(!ex)o.msgs.push('La serie '+s+' no existe en el inventario.');else if(ex.loc.t==='transito')o.msgs.push('La serie '+s+' está en tránsito; no se mueve.');else if(locKey(ex.loc)===locKey(loc))o.msgs.push('La serie '+s+' ya está en '+locShort(loc)+'.');else{const k=kitOf(ex.id);if(k)warn('La serie '+s+' es parte de '+k.code+'; el kit quedará repartido.');o.move.push(ex.id);used.add(ex.id);}});}
     else{const c=S.items.filter(i=>!used.has(i.id)&&(prod?i.np===prod.np:(norm(i.nombre)===norm(o.desc)||norm(i.nombre)===norm(o.nombre)||(!!npRaw&&npKey(i.np)===npKey(npRaw))))&&i.cond==='Operativo'&&!kitOf(i.id)&&i.loc.t!=='transito'&&i.loc.t!=='instalado'&&locKey(i.loc)!==locKey(loc)).sort((a,b)=>(a.loc.t==='almacen'?(a.loc.a===almPrin()?0:1):2)-(b.loc.t==='almacen'?(b.loc.a===almPrin()?0:1):2));
@@ -4540,7 +4548,7 @@ function analyze(){
  I.rows=out;
 }
 const IMP_MAX=2000;
-function impCounts(){const c={rows:IMP.rows.length,create:0,move:0,baja:0,skip:0,err:0,warn:0,doRows:0};IMP.rows.forEach(o=>{if(o.level==='error'){c.err++;return;}if(o.level==='skip'){c.skip++;return;}if(o.level==='warn')c.warn++;c.create+=o.create.length;c.move+=o.move.length;c.baja+=o.baja.length;if(o.create.length||o.move.length||o.baja.length)c.doRows++;});return c;}
+function impCounts(){const c={rows:IMP.rows.length,create:0,fill:0,move:0,baja:0,skip:0,err:0,warn:0,doRows:0};IMP.rows.forEach(o=>{if(o.level==='error'){c.err++;return;}if(o.level==='skip'){c.skip++;return;}if(o.level==='warn')c.warn++;c.create+=o.create.length;c.fill+=o.fill.length;c.move+=o.move.length;c.baja+=o.baja.length;if(o.create.length||o.fill.length||o.move.length||o.baja.length)c.doRows++;});return c;}
 /* Guarda en el modelo los otros códigos y textos con que llegó, para reconocerlo solo la próxima vez */
 function learnAlias(p,vals){
  if(!Array.isArray(p.alias))p.alias=[];let n=0;
@@ -4554,10 +4562,10 @@ function learnAlias(p,vals){
 function applyImport(){
  // se vuelve a revisar con el inventario de este momento (otra persona pudo registrar algo mientras se revisaba)
  const b0=impCounts();analyze();const b1=impCounts();
- if(['create','move','baja','err','doRows'].some(k=>b0[k]!==b1[k])){render();toast('El inventario cambió mientras revisabas. Revisa la vista previa y vuelve a importar.','bad',7000);return;}
- if(b1.create+b1.move+b1.baja>IMP_MAX){toast('Son demasiadas unidades para una importación (máximo '+IMP_MAX+'). Divide el archivo en partes.','bad',7000);return;}
+ if(['create','fill','move','baja','err','doRows'].some(k=>b0[k]!==b1[k])){render();toast('El inventario cambió mientras revisabas. Revisa la vista previa y vuelve a importar.','bad',7000);return;}
+ if(b1.create+b1.fill+b1.move+b1.baja>IMP_MAX){toast('Son demasiadas unidades para una importación (máximo '+IMP_MAX+'). Divide el archivo en partes.','bad',7000);return;}
  const impId=newId('imp'),U={prods:[],items0:{},alias:{},serie:[]},ms=[];
- const groups={};let c=0,mv=0,bj=0,np=0,ap=0;const made={};
+ const groups={};let c=0,fl=0,mv=0,bj=0,np=0,ap=0;const made={};
  const grp=(key,base)=>groups[key]||(groups[key]=Object.assign({items:[],notas:[],from:[],guia:''},base));
  // modelo del catálogo de cada fila: el reconocido, el elegido a mano o uno nuevo
  const prodFor=o=>{
@@ -4576,10 +4584,14 @@ function applyImport(){
   S.prods.push(p);U.prods.push(p.id);made[k]=p;np++;return p;};
  IMP.rows.forEach(o=>{
   if(o.level==='error'||o.level==='skip')return;
-  if(o.create.length){const p=prodFor(o);if(p){o.np=p.np;o.nombre=p.nombre;o.modelo=p.modelo;o.marca=p.marca;o.cat=p.cat;if(o.series.length&&!p.serie){p.serie=true;if(!U.prods.includes(p.id))U.serie.push(p.id);}}
+  if(o.create.length||o.fill.length){const p=prodFor(o);if(p){o.np=p.np;o.nombre=p.nombre;o.modelo=p.modelo;o.marca=p.marca;o.cat=p.cat;if(o.series.length&&!p.serie){p.serie=true;if(!U.prods.includes(p.id))U.serie.push(p.id);}}
    const im=(o.meta&&o.meta.imei)||{};
    const ids=o.create.map(s=>{const it={id:newId('i'),code:nextCode(S.items,'code','MQ-',4),np:o.np,cat:o.cat,marca:o.marca,nombre:o.nombre,modelo:o.modelo,serie:s,cond:o.cond,loc:clone(o.loc),photo:null};if(s&&im[s])it.obs='IMEI '+im[s];S.items.push(it);return it.id;});c+=ids.length;
-   const g=grp('I|'+o.fecha.slice(0,10)+'|'+locKey(o.loc),{tipo:'Ingreso',fecha:o.fecha,loc:o.loc});g.items.push(...ids);if(o.nota)g.notas.push(o.nota);if(o.guia&&!g.guia)g.guia=o.guia;}
+   if(ids.length){const g=grp('I|'+o.fecha.slice(0,10)+'|'+locKey(o.loc),{tipo:'Ingreso',fecha:o.fecha,loc:o.loc});g.items.push(...ids);if(o.nota)g.notas.push(o.nota);if(o.guia&&!g.guia)g.guia=o.guia;}
+   // «Completar series»: las unidades que ya estaban reciben su serie (queda como edición de datos de la importación)
+   if(o.fill.length){const g=grp('E|'+locKey(o.loc),{tipo:'Edición de datos',fecha:nowIso(),loc:o.loc});o.fill.forEach(f=>{const i=item(f.id);if(!i||i.serie)return;
+    const u0=U.items0[f.id]||(U.items0[f.id]={});if(!('serie' in u0))u0.serie=i.serie||'';if(im[f.serie]&&!('obs' in u0))u0.obs=i.obs||'';
+    i.serie=f.serie;if(im[f.serie])i.obs=(i.obs?i.obs+' · ':'')+'IMEI '+im[f.serie];g.items.push(f.id);if(!g.from.length)g.from.push('Series');fl++;});}}
   if(o.move.length){const g=grp('T|'+o.fecha.slice(0,10)+'|'+locKey(o.loc),{tipo:'Traslado',fecha:o.fecha,loc:o.loc});o.move.forEach(id=>{const i=item(id);g.from.push(locShort(i.loc));const u0=U.items0[id]||(U.items0[id]={});if(!('loc' in u0))u0.loc=clone(i.loc);i.loc=clone(o.loc);g.items.push(id);});mv+=o.move.length;if(o.nota)g.notas.push(o.nota);if(o.guia&&!g.guia)g.guia=o.guia;}
   if(o.baja.length){const g=grp('B|'+o.fecha.slice(0,10),{tipo:'Baja',fecha:o.fecha,loc:null});o.baja.forEach(id=>{const i=item(id);g.from.push(locShort(i.loc));g.loc=g.loc||clone(i.loc);const u0=U.items0[id]||(U.items0[id]={});if(!('cond' in u0))u0.cond=i.cond;i.cond='De baja';g.items.push(id);});bj+=o.baja.length;if(o.nota)g.notas.push(o.nota);}
  });
@@ -4587,8 +4599,8 @@ function applyImport(){
  const docNota=D?[docTxt+(D.fecha?' del '+D.fecha.split('-').reverse().join('/'):''),D.ref?'Pedido: '+D.ref:''].filter(Boolean).join(' · '):'';
  Object.values(groups).sort((a,b)=>a.fecha<b.fecha?-1:1).forEach(g=>{ms.push(newMov({imp:impId,tipo:g.tipo,fecha:g.fecha,por:meName(),origen:g.tipo==='Ingreso'?(D?docTxt:'Importación Excel'):[...new Set(g.from)].join(' + '),destino:clone(g.loc),items:g.items,guia:g.guia,nota:['Importado de '+IMP.fileName].concat(docNota?[docNota]:[],[...new Set(g.notas)]).join(' · ')}));});
  // queda registrada en su primer movimiento: así se puede quitar después desde «Importaciones hechas»
- if(ms.length){ms[0].impInfo={file:IMP.fileName,doc:docTxt,fecha:nowIso(),por:meName(),c,mv,bj,np};ms[0].impUndo=U;}
- IMP.result={c,mv,bj,np,ap,movs:ms.length,impId,file:IMP.fileName,undone:false};
+ if(ms.length){ms[0].impInfo={file:IMP.fileName,doc:docTxt,fecha:nowIso(),por:meName(),c,fl,mv,bj,np};ms[0].impUndo=U;}
+ IMP.result={c,fl,mv,bj,np,ap,movs:ms.length,impId,file:IMP.fileName,undone:false};
  notify('importacion',{titulo:'Importación de '+IMP.fileName+': '+c+' creados, '+mv+' movidos, '+bj+' de baja'+(np?', '+np+' modelos nuevos':''),texto:meName()+' importó '+IMP.fileName+(docTxt?' ('+docTxt+')':'')+'.',para:admins()});
  commit();window.scrollTo(0,0);
 }
@@ -4618,7 +4630,7 @@ function impRemove(id,after){
 function impAskRemove(id,after){
  const why=impBlocked(id);if(why){toast('No se puede quitar: '+esc(why)+'. Corrígelo a mano.','bad',7000);return;}
  const h=impHead(id),I=h.impInfo||{},cr=impCreated(id).length,npN=(h.impUndo.prods||[]).filter(x=>S.prods.some(p=>p.id===x)).length;
- const what=[cr?plural(cr,'equipo creado','equipos creados'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'equipo movido vuelve','equipos movidos vuelven')+' a su lugar':'',I.bj?plural(I.bj,'baja se revierte','bajas se revierten'):''].filter(Boolean);
+ const what=[cr?plural(cr,'equipo creado','equipos creados'):'',I.fl?plural(I.fl,'serie puesta se quita','series puestas se quitan'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'equipo movido vuelve','equipos movidos vuelven')+' a su lugar':'',I.bj?plural(I.bj,'baja se revierte','bajas se revierten'):''].filter(Boolean);
  ask({title:'¿Quitar esta importación?',ok:'Quitar',danger:true,html:'<p style="margin:0"><b>'+esc(I.doc||I.file||'Importación')+'</b></p><ul class="sum">'+what.map(t=>'<li>'+t+'.</li>').join('')+'<li>Se borran sus movimientos. Lo que otras personas registraron aparte no se toca.</li></ul>',
   fn:()=>{const w=impBlocked(id);if(w){toast('No se puede quitar: '+esc(w)+'. Corrígelo a mano.','bad',7000);return;}impRemove(id,after);toast('Importación quitada.');}});
 }
@@ -4627,7 +4639,7 @@ function impHistHtml(){
  if(!hs.length)return '';
  return '<section class="sec" id="impHist"><h2 class="sec-t">Importaciones hechas</h2><p class="sub-t">Cada factura o Excel por separado. «Quitar» borra solo lo que trajo ese documento.</p><div class="list">'
   +hs.slice(0,30).map(m=>{const I=m.impInfo,cr=impCreated(m.imp).length,npN=(m.impUndo.prods||[]).filter(x=>S.prods.some(p=>p.id===x)).length;
-   const parts=[cr?plural(cr,'equipo','equipos'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'movido','movidos'):'',I.bj?I.bj+' de baja':''].filter(Boolean).join(' · ');
+   const parts=[cr?plural(cr,'equipo','equipos'):'',I.fl?plural(I.fl,'serie puesta','series puestas'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'movido','movidos'):'',I.bj?I.bj+' de baja':''].filter(Boolean).join(' · ');
    return '<div class="xcard"><span class="rmain"><span class="rname">'+esc(I.doc||I.file||'Importación')+'</span><span class="rsub">'+(I.doc&&I.file?esc(I.file)+' · ':'')+'importado el '+esc(fdate(I.fecha).slice(0,10))+' por '+esc(I.por||'—')+(parts?' · '+parts:'')+'</span></span><button class="btn" data-act="impDel" data-id="'+esc(m.imp)+'" aria-label="Quitar '+esc(I.doc||I.file||'importación')+'">Quitar</button></div>';}).join('')
   +'</div>'+(hs.length>30?'<p class="small muted" style="margin:0">Se muestran las 30 más recientes de '+hs.length+'.</p>':'')+'</section>';
 }
@@ -4654,7 +4666,7 @@ function sampleRows(){
 function lvlPill(o){
  if(o.level==='error')return '<span class="pill p-bad">No se importa</span>';
  if(o.level==='skip')return '<span class="pill p-neutral">Se omite</span>';
- const a=o.create.length?'Ingresan '+o.create.length:o.move.length?'Mover '+o.move.length:o.baja.length?'Dar de baja '+o.baja.length:'';
+ const a=(o.create.length||o.fill.length)?[o.fill.length?'Pone serie a '+o.fill.length:'',o.create.length?'Ingresan '+o.create.length:''].filter(Boolean).join(' · '):o.move.length?'Mover '+o.move.length:o.baja.length?'Dar de baja '+o.baja.length:'';
  return '<span class="pill '+(o.level==='warn'?'p-warn':'p-ok')+'">'+a+'</span>';
 }
 /* Celda Artículo de la revisión: cómo se reconoció y, en ingresos, elegir otro modelo o crear uno nuevo */
@@ -4690,8 +4702,8 @@ function impPanel(){
  const I=IMP;
  if(I.result){const R=I.result;
   return '<section class="sec imp" id="impPanel"><h2 class="sec-t">Importación de '+esc(R.file)+'</h2>'+(R.undone?'<div class="kstatus"><p><b>Importación deshecha.</b> Se quitó lo que la importación había agregado o cambiado.</p><div class="actions"><button class="btn" data-act="xClose">Cerrar</button></div></div>'
-  :'<div class="kstatus"><div style="display:flex;gap:14px;align-items:center"><span class="done-ico">'+IC.check+'</span><div><b style="font-size:17px">Importación aplicada</b><p class="small muted" style="margin:2px 0 0">'+plural(R.c,'equipo creado','equipos creados')+' · '+plural(R.mv,'movido','movidos')+' · '+plural(R.bj,'dado de baja','dados de baja')+' · '+plural(R.movs,'movimiento registrado','movimientos registrados')+(R.np?' · '+plural(R.np,'modelo nuevo en el catálogo','modelos nuevos en el catálogo'):'')+(R.ap?' · '+plural(R.ap,'nombre o código aprendido','nombres o códigos aprendidos'):'')+' a nombre de '+esc(S.user)+'.</p></div></div><div class="actions"><button class="btn primary" data-act="xGo" data-t="inv">Ver inventario</button><button class="btn" data-act="xGo" data-t="movs">Ver movimientos</button><button class="btn danger" data-act="xUndo">Deshacer importación</button><button class="btn ghost" data-act="xClose">Cerrar</button></div></div>')+'</section>';}
- const sh=I.sheets[I.sheetIx],rows=sh.rows,cnt=impCounts(),tot=cnt.create+cnt.move+cnt.baja,over=tot>IMP_MAX;
+  :'<div class="kstatus"><div style="display:flex;gap:14px;align-items:center"><span class="done-ico">'+IC.check+'</span><div><b style="font-size:17px">Importación aplicada</b><p class="small muted" style="margin:2px 0 0">'+plural(R.c,'equipo creado','equipos creados')+(R.fl?' · '+plural(R.fl,'serie puesta','series puestas')+' a equipos que ya estaban':'')+' · '+plural(R.mv,'movido','movidos')+' · '+plural(R.bj,'dado de baja','dados de baja')+' · '+plural(R.movs,'movimiento registrado','movimientos registrados')+(R.np?' · '+plural(R.np,'modelo nuevo en el catálogo','modelos nuevos en el catálogo'):'')+(R.ap?' · '+plural(R.ap,'nombre o código aprendido','nombres o códigos aprendidos'):'')+' a nombre de '+esc(S.user)+'.</p></div></div><div class="actions"><button class="btn primary" data-act="xGo" data-t="inv">Ver inventario</button><button class="btn" data-act="xGo" data-t="movs">Ver movimientos</button><button class="btn danger" data-act="xUndo">Deshacer importación</button><button class="btn ghost" data-act="xClose">Cerrar</button></div></div>')+'</section>';}
+ const sh=I.sheets[I.sheetIx],rows=sh.rows,cnt=impCounts(),tot=cnt.create+cnt.fill+cnt.move+cnt.baja,over=tot>IMP_MAX;
  const hdrOpts=[['-1','Sin encabezados (detectar por contenido)']].concat(rows.slice(0,15).map((r,ix)=>[String(ix),'Fila '+(ix+1)+': '+r.filter(x=>x!==''&&x!=null).slice(0,4).map(x=>x instanceof Date?fday(parseDate(x)||''):String(x)).join(' · ').slice(0,60)]));
  const fieldOpts=c=>Object.keys(FIELDS).map(f=>'<option value="'+f+'"'+(I.map[c]===f?' selected':'')+'>'+FIELDS[f]+'</option>').join('');
  const start=I.headerRow+1;
@@ -4722,7 +4734,9 @@ function impPanel(){
  +'<h3 class="h3">1. Columnas reconocidas</h3>'+(missing.length?'<p class="small" style="margin:0;color:var(--warn)">No se encontró: '+missing.map(f=>FIELDS[f]).join(', ')+'. Puedes asignarlas a mano en la tabla'+(unusedC.length&&!I.showUnused?' (abre «Ver columnas que no se usan»)':'')+'.</p>':'<p class="small muted" style="margin:0">Revisa que cada columna esté bien asignada. Puedes cambiarla.</p>')
  +(isDesk()?'<div class="tablewrap"><table class="tbl map"><thead><tr><th><span class="nosort">Col.</span></th><th><span class="nosort">Encabezado</span></th><th><span class="nosort">Ejemplos</span></th><th><span class="nosort">Se usa como</span></th><th><span class="nosort">Cómo se detectó</span></th></tr></thead><tbody>'+mapRows+'</tbody></table></div>':'<div class="list">'+mapCards+'</div>'))
  +(!D&&unusedC.length?'<div><button class="btn ghost sm" data-act="xUnused" aria-expanded="'+(I.showUnused?'true':'false')+'">'+(I.showUnused?'Ocultar las columnas que no se usan':'Ver '+plural(unusedC.length,'columna que no se usa','columnas que no se usan'))+'</button></div>':'')
- +'<h3 class="h3">2. Vista previa</h3><div class="xsum"><span class="pill p-neutral">'+plural(cnt.rows,L1,L2)+'</span>'+(cnt.create?'<span class="pill p-ok">'+plural(cnt.create,'unidad a ingresar','unidades a ingresar')+'</span>':'')+(cnt.move?'<span class="pill p-ok">'+plural(cnt.move,'equipo a mover','equipos a mover')+'</span>':'')+(cnt.baja?'<span class="pill p-ok">'+cnt.baja+' de baja</span>':'')+(cnt.warn?'<span class="pill p-warn">'+plural(cnt.warn,L1+' con aviso',L2+' con aviso')+'</span>':'')+(cnt.skip?'<span class="pill p-neutral">'+plural(cnt.skip,L1+(D?' omitida':' omitida'),L2+' omitidas')+'</span>':'')+(cnt.err?'<span class="pill p-bad">'+plural(cnt.err,L1+' con error',L2+' con error')+'</span>':'')+'</div>'
+ +'<h3 class="h3">2. Vista previa</h3>'
+ +((I.fillCand||I.fill)&&I.defTipo!=='Baja'?'<label class="chkline"><input type="checkbox" data-x="fill"'+(I.fill?' checked':'')+'> <span><b>Completar series</b>: si ya hay equipos de ese modelo sin serie en el mismo lugar, se les ponen las series del archivo y solo ingresan los que falten'+(I.fillCand?' ('+plural(I.fillCand,L1,L2)+')':'')+'.</span></label>':'')
+ +'<div class="xsum"><span class="pill p-neutral">'+plural(cnt.rows,L1,L2)+'</span>'+(cnt.create?'<span class="pill p-ok">'+plural(cnt.create,'unidad a ingresar','unidades a ingresar')+'</span>':'')+(cnt.fill?'<span class="pill p-ok">'+plural(cnt.fill,'serie para un equipo que ya estaba','series para equipos que ya estaban')+'</span>':'')+(cnt.move?'<span class="pill p-ok">'+plural(cnt.move,'equipo a mover','equipos a mover')+'</span>':'')+(cnt.baja?'<span class="pill p-ok">'+cnt.baja+' de baja</span>':'')+(cnt.warn?'<span class="pill p-warn">'+plural(cnt.warn,L1+' con aviso',L2+' con aviso')+'</span>':'')+(cnt.skip?'<span class="pill p-neutral">'+plural(cnt.skip,L1+(D?' omitida':' omitida'),L2+' omitidas')+'</span>':'')+(cnt.err?'<span class="pill p-bad">'+plural(cnt.err,L1+' con error',L2+' con error')+'</span>':'')+'</div>'
  +(recSum?'<div class="xsum"><span class="small muted">Modelos reconocidos:</span>'+recSum+'</div>':'')
  +(isDesk()?'<div class="tablewrap"><table class="tbl prev"><thead><tr><th><span class="nosort">'+rowWord()+'</span></th><th><span class="nosort">Fecha</span></th><th><span class="nosort">Artículo</span></th><th><span class="nosort">Tipo</span></th><th><span class="nosort">Lugar</span></th><th class="num"><span class="nosort">Cant.</span></th><th><span class="nosort">Serie</span></th><th><span class="nosort">Resultado</span></th></tr></thead><tbody>'+(prev||'<tr><td colspan="8" class="muted">No hay filas con datos debajo de los encabezados.</td></tr>')+'</tbody></table></div>':(I.rows.length?'<div class="list">'+ordered.map(o=>o.omit?omitRow(o,false):'<div class="mcard lv-'+o.level+'"><div class="rtop"><span class="rname">'+rowWord()+' '+rowNo(o)+'</span>'+lvlPill(o)+'</div><div class="artc">'+artCell(o)+'</div><span class="rsub">'+(o.omit?'':esc(o.fechaTxt)+' · '+esc(o.tipo)+' · '+esc(o.lugarTxt)+' · ')+'cant. '+o.qty+(o.series.length?' · '+esc(o.series.join(', ')):'')+'</span>'+(o.msgs.length?'<span class="rsub">'+o.msgs.map(esc).join('<br>')+'</span>':'')+'</div>').join('')+'</div>':'<p class="empty">No hay filas con datos debajo de los encabezados.</p>'))
  +(I.rows.length>200?'<p class="small muted" style="margin:0">Se muestran 200 de '+I.rows.length+' '+L2+'; se importan todas.</p>':'')
@@ -5085,7 +5099,7 @@ document.addEventListener('click',e=>{
  if(a==='xKit'){if(guard('exportar'))return;const v=($('#xkit')||{}).value;if(v)xExport('kit:'+v);return;}
  if(a==='xCargo'){if(guard('exportar'))return;const v=($('#xcargo')||{}).value;if(v)xExport('cargo:'+v);return;}
  if(a==='xSample'){if(guard('importar'))return;setupImport('Ejemplo_movimientos_octubre.xlsx',[{name:'Octubre',rows:sampleRows()}]);return;}
- if(a==='xApply'){if(guard('importar'))return;const c=impCounts();ask({title:'¿Importar al inventario?',ok:'Importar',html:'<ul class="sum">'+(c.create?'<li>Se crean <b>'+plural(c.create,'equipo','equipos')+'</b>.</li>':'')+(c.move?'<li>Se mueven <b>'+plural(c.move,'equipo','equipos')+'</b> a su nuevo lugar.</li>':'')+(c.baja?'<li>Se dan de baja <b>'+c.baja+'</b>.</li>':'')+((c.err+c.skip)?'<li>'+plural(c.err+c.skip,'fila no se importa','filas no se importan')+' (con error u omitidas).</li>':'')+'<li>Los movimientos quedan a nombre de <b>'+esc(meName())+'</b>. Podrás deshacer la importación.</li></ul>',fn:applyImport});return;}
+ if(a==='xApply'){if(guard('importar'))return;const c=impCounts();ask({title:'¿Importar al inventario?',ok:'Importar',html:'<ul class="sum">'+(c.create?'<li>Se crean <b>'+plural(c.create,'equipo','equipos')+'</b>.</li>':'')+(c.fill?'<li>Se ponen <b>'+plural(c.fill,'serie','series')+'</b> a equipos que ya estaban en el almacén.</li>':'')+(c.move?'<li>Se mueven <b>'+plural(c.move,'equipo','equipos')+'</b> a su nuevo lugar.</li>':'')+(c.baja?'<li>Se dan de baja <b>'+c.baja+'</b>.</li>':'')+((c.err+c.skip)?'<li>'+plural(c.err+c.skip,'fila no se importa','filas no se importan')+' (con error u omitidas).</li>':'')+'<li>Los movimientos quedan a nombre de <b>'+esc(meName())+'</b>. Podrás deshacer la importación.</li></ul>',fn:applyImport});return;}
  if(a==='xUndo'){const R=IMP&&IMP.result;if(!R||!R.impId||R.undone)return;if(guard('importar'))return;impAskRemove(R.impId,()=>{R.undone=true;});return;}
  if(a==='impDel'){if(guard('importar'))return;impAskRemove(d.id,()=>{if(IMP&&IMP.result&&IMP.result.impId===d.id)IMP.result.undone=true;});return;}
  if(a==='xUnused'){if(IMP){IMP.showUnused=!IMP.showUnused;render();}return;}
@@ -5185,6 +5199,7 @@ document.addEventListener('change',async e=>{
   else if(x==='ncat'){const k=el.dataset.k;if(k)IMP.nuevo[k]=Object.assign(IMP.nuevo[k]||{},{cat:el.value});}
   else if(x==='pdfFecha'){if(IMP.src&&/^\d{4}-\d{2}-\d{2}$/.test(el.value))IMP.src.fecha=el.value;}
   else if(x==='pdfDocs'){if(IMP.src)IMP.src.docs=el.checked;}
+  else if(x==='fill'){IMP.fill=el.checked;}
   else if(x==='map'){const c=+el.dataset.c,f=el.value;if(f){const o=IMP.map.indexOf(f);if(o>=0&&o!==c){IMP.map[o]='';IMP.how[o]='';}}IMP.map[c]=f;IMP.how[c]=f?'manual':'';}
   analyze();render();return;}
  if(el.dataset.file==='paq'){const f=el.files&&el.files[0];el.value='';addPaqPhoto(f);return;}
