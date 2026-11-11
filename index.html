@@ -4556,7 +4556,7 @@ function applyImport(){
  const b0=impCounts();analyze();const b1=impCounts();
  if(['create','move','baja','err','doRows'].some(k=>b0[k]!==b1[k])){render();toast('El inventario cambió mientras revisabas. Revisa la vista previa y vuelve a importar.','bad',7000);return;}
  if(b1.create+b1.move+b1.baja>IMP_MAX){toast('Son demasiadas unidades para una importación (máximo '+IMP_MAX+'). Divide el archivo en partes.','bad',7000);return;}
- const U={items:[],prods:[],movs:[],items0:{},alias:{},serie:[],prev:S.movs.map(m=>m.id)};
+ const impId=newId('imp'),U={prods:[],items0:{},alias:{},serie:[]},ms=[];
  const groups={};let c=0,mv=0,bj=0,np=0,ap=0;const made={};
  const grp=(key,base)=>groups[key]||(groups[key]=Object.assign({items:[],notas:[],from:[],guia:''},base));
  // modelo del catálogo de cada fila: el reconocido, el elegido a mano o uno nuevo
@@ -4578,17 +4578,58 @@ function applyImport(){
   if(o.level==='error'||o.level==='skip')return;
   if(o.create.length){const p=prodFor(o);if(p){o.np=p.np;o.nombre=p.nombre;o.modelo=p.modelo;o.marca=p.marca;o.cat=p.cat;if(o.series.length&&!p.serie){p.serie=true;if(!U.prods.includes(p.id))U.serie.push(p.id);}}
    const im=(o.meta&&o.meta.imei)||{};
-   const ids=o.create.map(s=>{const it={id:newId('i'),code:nextCode(S.items,'code','MQ-',4),np:o.np,cat:o.cat,marca:o.marca,nombre:o.nombre,modelo:o.modelo,serie:s,cond:o.cond,loc:clone(o.loc),photo:null};if(s&&im[s])it.obs='IMEI '+im[s];S.items.push(it);U.items.push(it.id);return it.id;});c+=ids.length;
+   const ids=o.create.map(s=>{const it={id:newId('i'),code:nextCode(S.items,'code','MQ-',4),np:o.np,cat:o.cat,marca:o.marca,nombre:o.nombre,modelo:o.modelo,serie:s,cond:o.cond,loc:clone(o.loc),photo:null};if(s&&im[s])it.obs='IMEI '+im[s];S.items.push(it);return it.id;});c+=ids.length;
    const g=grp('I|'+o.fecha.slice(0,10)+'|'+locKey(o.loc),{tipo:'Ingreso',fecha:o.fecha,loc:o.loc});g.items.push(...ids);if(o.nota)g.notas.push(o.nota);if(o.guia&&!g.guia)g.guia=o.guia;}
   if(o.move.length){const g=grp('T|'+o.fecha.slice(0,10)+'|'+locKey(o.loc),{tipo:'Traslado',fecha:o.fecha,loc:o.loc});o.move.forEach(id=>{const i=item(id);g.from.push(locShort(i.loc));const u0=U.items0[id]||(U.items0[id]={});if(!('loc' in u0))u0.loc=clone(i.loc);i.loc=clone(o.loc);g.items.push(id);});mv+=o.move.length;if(o.nota)g.notas.push(o.nota);if(o.guia&&!g.guia)g.guia=o.guia;}
   if(o.baja.length){const g=grp('B|'+o.fecha.slice(0,10),{tipo:'Baja',fecha:o.fecha,loc:null});o.baja.forEach(id=>{const i=item(id);g.from.push(locShort(i.loc));g.loc=g.loc||clone(i.loc);const u0=U.items0[id]||(U.items0[id]={});if(!('cond' in u0))u0.cond=i.cond;i.cond='De baja';g.items.push(id);});bj+=o.baja.length;if(o.nota)g.notas.push(o.nota);}
  });
  const D=IMP.src,docTxt=D?D.tipo+(D.num?' '+D.num:'')+(D.proveedor?' · '+D.proveedor:''):'';
  const docNota=D?[docTxt+(D.fecha?' del '+D.fecha.split('-').reverse().join('/'):''),D.ref?'Pedido: '+D.ref:''].filter(Boolean).join(' · '):'';
- Object.values(groups).sort((a,b)=>a.fecha<b.fecha?-1:1).forEach(g=>{U.movs.push(newMov({tipo:g.tipo,fecha:g.fecha,por:meName(),origen:g.tipo==='Ingreso'?(D?docTxt:'Importación Excel'):[...new Set(g.from)].join(' + '),destino:clone(g.loc),items:g.items,guia:g.guia,nota:['Importado de '+IMP.fileName].concat(docNota?[docNota]:[],[...new Set(g.notas)]).join(' · ')}).id);});
- IMP.result={c,mv,bj,np,ap,movs:Object.keys(groups).length,undo:U,file:IMP.fileName,undone:false};
+ Object.values(groups).sort((a,b)=>a.fecha<b.fecha?-1:1).forEach(g=>{ms.push(newMov({imp:impId,tipo:g.tipo,fecha:g.fecha,por:meName(),origen:g.tipo==='Ingreso'?(D?docTxt:'Importación Excel'):[...new Set(g.from)].join(' + '),destino:clone(g.loc),items:g.items,guia:g.guia,nota:['Importado de '+IMP.fileName].concat(docNota?[docNota]:[],[...new Set(g.notas)]).join(' · ')}));});
+ // queda registrada en su primer movimiento: así se puede quitar después desde «Importaciones hechas»
+ if(ms.length){ms[0].impInfo={file:IMP.fileName,doc:docTxt,fecha:nowIso(),por:meName(),c,mv,bj,np};ms[0].impUndo=U;}
+ IMP.result={c,mv,bj,np,ap,movs:ms.length,impId,file:IMP.fileName,undone:false};
  notify('importacion',{titulo:'Importación de '+IMP.fileName+': '+c+' creados, '+mv+' movidos, '+bj+' de baja'+(np?', '+np+' modelos nuevos':''),texto:meName()+' importó '+IMP.fileName+(docTxt?' ('+docTxt+')':'')+'.',para:admins()});
  commit();window.scrollTo(0,0);
+}
+/* ---------- Importaciones hechas: cada una se puede quitar por separado ---------- */
+/* Los movimientos de una importación llevan `imp`; el primero guarda `impInfo` (qué fue) e `impUndo` (cómo quitarla:
+   modelos creados, lugar o condición anterior de lo movido o dado de baja, nombres aprendidos, serie activada). */
+function impMovs(id){return S.movs.filter(m=>m.imp===id);}
+function impHead(id){return S.movs.find(m=>m.imp===id&&m.impUndo)||null;}
+function impCreated(id){const have=new Set(S.items.map(i=>i.id));return impMovs(id).filter(m=>m.tipo==='Ingreso').reduce((a,m)=>a.concat(m.items||[]),[]).filter(x=>have.has(x));}
+/* Por qué no se puede quitar ('' si se puede): esos equipos ya tienen movimientos después o están en kits */
+function impBlocked(id){
+ const ms=impMovs(id),h=impHead(id);if(!h)return 'no se encontraron sus datos';
+ const cr=impCreated(id),mine=new Set(cr.concat(Object.keys(h.impUndo.items0||{}))),top=Math.max(...ms.map(m=>codeNum(m.num)));
+ if(S.movs.some(m=>m.imp!==id&&codeNum(m.num)>top&&(m.items||[]).some(x=>mine.has(x))))return 'estos equipos ya tienen movimientos después de la importación';
+ if(cr.some(x=>kitOf(x)))return 'algunos de sus equipos ya están en kits';
+ return '';
+}
+function impRemove(id,after){
+ const h=impHead(id);if(!h)return;const U=h.impUndo,cr=new Set(impCreated(id)),mv=new Set(impMovs(id).map(m=>m.id));
+ S.items=S.items.filter(i=>!cr.has(i.id));S.movs=S.movs.filter(m=>!mv.has(m.id));
+ Object.keys(U.items0||{}).forEach(x=>{const i=item(x);if(i)Object.assign(i,U.items0[x]);});
+ Object.keys(U.alias||{}).forEach(x=>{const p=S.prods.find(q=>q.id===x);if(p&&p.alias)p.alias=p.alias.filter(a=>!U.alias[x].includes(a));});
+ (U.serie||[]).forEach(x=>{const p=S.prods.find(q=>q.id===x);if(p)p.serie=false;});
+ const pr=new Set(U.prods||[]);S.prods=S.prods.filter(p=>!pr.has(p.id)||S.items.some(i=>i.np===p.np));
+ if(after)after();kitPrev={};checkKits(true);commit();
+}
+function impAskRemove(id,after){
+ const why=impBlocked(id);if(why){toast('No se puede quitar: '+esc(why)+'. Corrígelo a mano.','bad',7000);return;}
+ const h=impHead(id),I=h.impInfo||{},cr=impCreated(id).length,npN=(h.impUndo.prods||[]).filter(x=>S.prods.some(p=>p.id===x)).length;
+ const what=[cr?plural(cr,'equipo creado','equipos creados'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'equipo movido vuelve','equipos movidos vuelven')+' a su lugar':'',I.bj?plural(I.bj,'baja se revierte','bajas se revierten'):''].filter(Boolean);
+ ask({title:'¿Quitar esta importación?',ok:'Quitar',danger:true,html:'<p style="margin:0"><b>'+esc(I.doc||I.file||'Importación')+'</b></p><ul class="sum">'+what.map(t=>'<li>'+t+'.</li>').join('')+'<li>Se borran sus movimientos. Lo que otras personas registraron aparte no se toca.</li></ul>',
+  fn:()=>{const w=impBlocked(id);if(w){toast('No se puede quitar: '+esc(w)+'. Corrígelo a mano.','bad',7000);return;}impRemove(id,after);toast('Importación quitada.');}});
+}
+function impHistHtml(){
+ const hs=S.movs.filter(m=>m.imp&&m.impInfo&&m.impUndo).sort((a,b)=>(b.impInfo.fecha||'')<(a.impInfo.fecha||'')?-1:1);
+ if(!hs.length)return '';
+ return '<section class="sec" id="impHist"><h2 class="sec-t">Importaciones hechas</h2><p class="sub-t">Cada factura o Excel por separado. «Quitar» borra solo lo que trajo ese documento.</p><div class="list">'
+  +hs.slice(0,30).map(m=>{const I=m.impInfo,cr=impCreated(m.imp).length,npN=(m.impUndo.prods||[]).filter(x=>S.prods.some(p=>p.id===x)).length;
+   const parts=[cr?plural(cr,'equipo','equipos'):'',npN?plural(npN,'modelo nuevo','modelos nuevos'):'',I.mv?plural(I.mv,'movido','movidos'):'',I.bj?I.bj+' de baja':''].filter(Boolean).join(' · ');
+   return '<div class="xcard"><span class="rmain"><span class="rname">'+esc(I.doc||I.file||'Importación')+'</span><span class="rsub">'+(I.doc&&I.file?esc(I.file)+' · ':'')+'importado el '+esc(fdate(I.fecha).slice(0,10))+' por '+esc(I.por||'—')+(parts?' · '+parts:'')+'</span></span><button class="btn" data-act="impDel" data-id="'+esc(m.imp)+'" aria-label="Quitar '+esc(I.doc||I.file||'importación')+'">Quitar</button></div>';}).join('')
+  +'</div>'+(hs.length>30?'<p class="small muted" style="margin:0">Se muestran las 30 más recientes de '+hs.length+'.</p>':'')+'</section>';
 }
 function sampleRows(){
  const free=(np,a)=>S.items.find(i=>i.np===np&&i.loc.t==='almacen'&&(!a||i.loc.a===a)&&!kitOf(i.id)&&i.cond==='Operativo'&&i.serie);
@@ -4715,7 +4756,7 @@ function vExcel(){
  +(imp?'<section class="sec"><h2 class="sec-t">Importar inventario, compras o movimientos</h2>'
  +'<label class="drop" id="drop" for="xfile"><input class="vh" type="file" id="xfile" accept=".xlsx,.xls,.csv,.pdf,application/pdf" data-file="xlsxImport"><span class="drop-ico">'+IC.ingreso+'</span><b>'+(isDesk()?'Arrastra tu Excel o factura PDF aquí, o haz clic para elegirlo':'Toca para elegir tu Excel o factura PDF')+'</b><span>.xlsx, .xls, .csv o PDF de factura, cotización o pedido</span></label>'
  +(DEMO?'':'<div class="actions"><button class="btn" data-act="xSample">Probar con un Excel de ejemplo</button></div>')
- +'<div class="recbox"><span class="lab">Qué reconoce</span><p>Busca la fila de encabezados aunque haya títulos arriba, y reconoce las columnas por su nombre. Si no tienen nombre, las reconoce por lo que hay en las celdas.</p><p><b>Fecha</b>: 12/10/2026, 2026-10-12 o celda de fecha · <b>Artículo</b> o <b>N° de parte</b> · <b>Tipo</b>: Ingreso, Entrada, Compra · Traslado, Salida, Envío · Baja · <b>Lugar</b>: nombre o ciudad de un almacén, obra, ciudad o código de máquina · <b>Cantidad</b> · <b>Serie</b>: una o varias separadas por coma, o un rango (1902231 - 1902234).</p><p><b>Modelos</b>: un mismo equipo se reconoce por su N° de parte, por el código del fabricante (851344), por el código de modelo aunque venga escrito distinto (MSC1446, MSC 1446) o por un nombre que ya se usó antes. Si no lo encuentra, te propone un modelo nuevo con nombre en español para el catálogo, y lo que elijas lo recuerda para la próxima vez.</p><p><b>Facturas PDF</b>: lee el número, la fecha, el proveedor y cada línea con su cantidad, series e IMEI. Las licencias, guías impresas y encabezados de conjunto no entran al inventario.</p></div></section>'
+ +'<div class="recbox"><span class="lab">Qué reconoce</span><p>Busca la fila de encabezados aunque haya títulos arriba, y reconoce las columnas por su nombre. Si no tienen nombre, las reconoce por lo que hay en las celdas.</p><p><b>Fecha</b>: 12/10/2026, 2026-10-12 o celda de fecha · <b>Artículo</b> o <b>N° de parte</b> · <b>Tipo</b>: Ingreso, Entrada, Compra · Traslado, Salida, Envío · Baja · <b>Lugar</b>: nombre o ciudad de un almacén, obra, ciudad o código de máquina · <b>Cantidad</b> · <b>Serie</b>: una o varias separadas por coma, o un rango (1902231 - 1902234).</p><p><b>Modelos</b>: un mismo equipo se reconoce por su N° de parte, por el código del fabricante (851344), por el código de modelo aunque venga escrito distinto (MSC1446, MSC 1446) o por un nombre que ya se usó antes. Si no lo encuentra, te propone un modelo nuevo con nombre en español para el catálogo, y lo que elijas lo recuerda para la próxima vez.</p><p><b>Facturas PDF</b>: lee el número, la fecha, el proveedor y cada línea con su cantidad, series e IMEI. Las licencias, guías impresas y encabezados de conjunto no entran al inventario.</p></div></section>'+impHistHtml()
  +(isAdmin()?'<section class="sec"><h2 class="sec-t">Importar plantillas de kit</h2><div class="xcard"><span class="rmain"><span class="rname">Cargar plantillas desde Excel</span><span class="rsub">Columnas Plantilla, Marca, Máquinas, Espacio y N° de parte aceptados. Verás lo nuevo y lo que cambia antes de aplicar.</span></span><button class="btn" data-act="tplXlsx">'+IC.xls+'Elegir archivo</button></div></section>':'')
  :'<section class="sec"><h2 class="sec-t">Importar</h2><div class="lockbox"><p>Solo un administrador puede importar inventario, facturas o plantillas desde Excel, CSV o PDF.</p></div></section>')
  +'</div></div>';
@@ -5045,20 +5086,8 @@ document.addEventListener('click',e=>{
  if(a==='xCargo'){if(guard('exportar'))return;const v=($('#xcargo')||{}).value;if(v)xExport('cargo:'+v);return;}
  if(a==='xSample'){if(guard('importar'))return;setupImport('Ejemplo_movimientos_octubre.xlsx',[{name:'Octubre',rows:sampleRows()}]);return;}
  if(a==='xApply'){if(guard('importar'))return;const c=impCounts();ask({title:'¿Importar al inventario?',ok:'Importar',html:'<ul class="sum">'+(c.create?'<li>Se crean <b>'+plural(c.create,'equipo','equipos')+'</b>.</li>':'')+(c.move?'<li>Se mueven <b>'+plural(c.move,'equipo','equipos')+'</b> a su nuevo lugar.</li>':'')+(c.baja?'<li>Se dan de baja <b>'+c.baja+'</b>.</li>':'')+((c.err+c.skip)?'<li>'+plural(c.err+c.skip,'fila no se importa','filas no se importan')+' (con error u omitidas).</li>':'')+'<li>Los movimientos quedan a nombre de <b>'+esc(meName())+'</b>. Podrás deshacer la importación.</li></ul>',fn:applyImport});return;}
- if(a==='xUndo'){const R=IMP&&IMP.result;if(!R||!R.undo||R.undone)return;const U=R.undo,umv=new Set(U.movs);
-  // solo se deshace lo que hizo la importación; si esos equipos ya tienen movimientos o kits después, se corrige a mano
-  const blocked=()=>{const mine=new Set(U.items.concat(Object.keys(U.items0))),prev=new Set(U.prev||[]);
-   const later=S.movs.some(m=>!umv.has(m.id)&&!prev.has(m.id)&&(m.items||[]).some(id=>mine.has(id))),inKit=U.items.some(id=>kitOf(id));
-   if(later||inKit)toast('No se puede deshacer: estos equipos ya tienen '+(inKit?'kits armados':'movimientos')+' después de la importación. Corrígelos a mano.','bad',7000);return later||inKit;};
-  if(blocked())return;
-  ask({title:'¿Deshacer la importación?',ok:'Sí, deshacer',danger:true,html:'<p style="margin:0">Se quitan los equipos y modelos creados, los movidos vuelven a su lugar y se borran los movimientos de la importación. Lo que otras personas registraron mientras tanto no se toca.</p>',fn:()=>{
-   if(R.undone||blocked())return;const it=new Set(U.items),pr=new Set(U.prods);
-   S.items=S.items.filter(i=>!it.has(i.id));S.movs=S.movs.filter(m=>!umv.has(m.id));
-   Object.keys(U.items0).forEach(id=>{const i=item(id);if(i)Object.assign(i,U.items0[id]);});
-   Object.keys(U.alias).forEach(id=>{const p=S.prods.find(x=>x.id===id);if(p&&p.alias)p.alias=p.alias.filter(a=>!U.alias[id].includes(a));});
-   U.serie.forEach(id=>{const p=S.prods.find(x=>x.id===id);if(p)p.serie=false;});
-   S.prods=S.prods.filter(p=>!pr.has(p.id)||S.items.some(i=>i.np===p.np));
-   R.undone=true;kitPrev={};checkKits(true);commit();toast('Importación deshecha.');}});return;}
+ if(a==='xUndo'){const R=IMP&&IMP.result;if(!R||!R.impId||R.undone)return;if(guard('importar'))return;impAskRemove(R.impId,()=>{R.undone=true;});return;}
+ if(a==='impDel'){if(guard('importar'))return;impAskRemove(d.id,()=>{if(IMP&&IMP.result&&IMP.result.impId===d.id)IMP.result.undone=true;});return;}
  if(a==='xUnused'){if(IMP){IMP.showUnused=!IMP.showUnused;render();}return;}
  if(a==='xClose'){IMP=null;render();return;}
  if(a==='xGo'){IMP=null;if(d.t==='inv'){invView='equipo';invFilter.q='';invFilter.grp='todos';invFilter.cat='';invFilter.marca='';}if(d.t==='movs')movFilter='todos';goTab(d.t);return;}
