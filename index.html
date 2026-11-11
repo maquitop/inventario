@@ -4191,7 +4191,7 @@ function recognize(inp){
  // el código del inicio de la descripción manda; uno de más adelante solo si no hay Modelo y no va después de «para»,
  // y entonces se avisa y no se aprende («Maletín para MCP80» no es el panel MCP80)
  const mc=modelCodes(mod)[0]||'',dl=ownCode(desc),dm=!mc&&!dl?descCode(desc):'',dc=dl||dm,rc=!art?ownCode(raw):'';
- const code=dc||mc||rc;const r={p:null,how:'',code,art,codeLead:!!(dl||mc||rc),codeMid:!!dm&&!rc,codeDiff:dl&&mc&&dl!==mc?mc:''};
+ const code=dc||mc||rc;const r={p:null,how:'',code,art,codeLead:!!(dl||mc||rc),codeMid:!!dm&&!rc,codeDiff:dl&&mc&&dl!==mc&&!dl.startsWith(mc)&&!mc.startsWith(dl)?mc:''};
  const ok=p=>!art||!prodArts(p).length||prodArts(p).includes(art);
  if(raw){const k=findNpExact(raw);if(k){r.p=prodBy(k);r.how='np';return r;}}
  if(art){const p=S.prods.find(p=>prodArts(p).includes(art));if(p){r.p=p;r.how='art';return r;}}
